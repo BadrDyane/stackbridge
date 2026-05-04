@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: stackbridge-postgres
+    environment:
+      POSTGRES_USER: stackbridge
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: stackbridge
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
