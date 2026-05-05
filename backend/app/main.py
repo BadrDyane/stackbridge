@@ -6,6 +6,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.api import auth
+from app.api import workflows
 
 
 @asynccontextmanager
@@ -32,6 +33,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(auth.router)
+app.include_router(workflows.router)
 
 
 @app.get("/health")
