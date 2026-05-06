@@ -5,8 +5,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
-from app.api import auth
-from app.api import workflows
+from app.api import auth, workflows, integrations
 
 
 @asynccontextmanager
@@ -31,9 +30,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routers
 app.include_router(auth.router)
 app.include_router(workflows.router)
+app.include_router(integrations.router)
 
 
 @app.get("/health")
@@ -46,7 +45,4 @@ async def health_check():
     except Exception as e:
         db_status = f"error: {str(e)}"
 
-    return {
-        "status": "ok",
-        "db": db_status,
-    }
+    return {"status": "ok", "db": db_status}
