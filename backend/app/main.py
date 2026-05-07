@@ -6,14 +6,18 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.api import auth, workflows, integrations
+from app.scheduler.setup import init_scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown logic."""
-    print("StackBridge API starting up...")
+    """Startup: init scheduler. Shutdown: stop scheduler."""
+    scheduler = init_scheduler()
+    scheduler.start()
+    print("StackBridge API starting up — scheduler running")
     yield
-    print("StackBridge API shutting down...")
+    scheduler.shutdown()
+    print("StackBridge API shutting down")
 
 
 app = FastAPI(

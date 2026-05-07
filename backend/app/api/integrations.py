@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +12,9 @@ from app.services import integration_service
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
-SUPPORTED_PLATFORMS = ["slack"]
+SUPPORTED_PLATFORMS = ["slack", "gmail", "notion"]
+
+FRONTEND_REDIRECT = "http://localhost:5173/integrations"
 
 
 @router.get("/{platform}/auth-url", response_model=AuthUrlResponse)
@@ -24,7 +26,7 @@ async def get_auth_url(
     if platform not in SUPPORTED_PLATFORMS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported platform: {platform}. Supported: {SUPPORTED_PLATFORMS}",
+            detail=f"Unsupported platform: {platform}",
         )
     try:
         auth_url = integration_service.start_oauth(platform, current_user.id)
@@ -41,23 +43,18 @@ async def oauth_callback(
     state: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Handle the OAuth callback from the provider.
-    No auth dependency — the state token proves identity.
-    Redirects browser to frontend on success.
-    """
+    """Handle OAuth callback — no auth header needed, state proves identity."""
     if platform not in SUPPORTED_PLATFORMS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported platform: {platform}",
         )
     try:
-        integration = await integration_service.handle_callback(platform, code, state, db)
+        await integration_service.handle_callback(platform, code, state, db)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    # Redirect to frontend integrations page after successful connection
-    return RedirectResponse(url="http://localhost:5173/integrations?connected=slack")
+    return RedirectResponse(url=f"{FRONTEND_REDIRECT}?connected={platform}")
 
 
 @router.get("", response_model=list[IntegrationResponse])
@@ -75,7 +72,7 @@ async def delete_integration(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Disconnect (soft-delete) an integration."""
+    """Disconnect an integration."""
     try:
         await integration_service.delete_integration(integration_id, current_user.id, db)
     except ValueError:
@@ -88,7 +85,7 @@ async def test_integration(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Verify an integration's token is still valid."""
+    """Verify an integration token is still valid."""
     try:
         return await integration_service.test_integration(integration_id, current_user.id, db)
     except ValueError as e:
