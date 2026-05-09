@@ -5,16 +5,18 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
-from app.api import auth, workflows, integrations
+from app.api import auth, workflows, integrations, runs
 from app.scheduler.setup import init_scheduler
+from app.services.prompt_seeder import seed_prompt_templates
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: init scheduler. Shutdown: stop scheduler."""
+    """Startup: seed templates, init scheduler. Shutdown: stop scheduler."""
+    await seed_prompt_templates()
     scheduler = init_scheduler()
     scheduler.start()
-    print("StackBridge API starting up — scheduler running")
+    print("StackBridge API starting up — scheduler running, templates seeded")
     yield
     scheduler.shutdown()
     print("StackBridge API shutting down")
@@ -37,6 +39,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(workflows.router)
 app.include_router(integrations.router)
+app.include_router(runs.router)
 
 
 @app.get("/health")
