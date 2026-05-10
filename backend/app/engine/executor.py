@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
+from app.engine.action_dispatcher import dispatch_action
 from app.engine.ai_processor import process_ai_step
 from app.engine.cost_tracker import record_step_cost, update_run_totals
 from app.engine.trigger_normalizer import envelope_to_input_text
@@ -20,7 +21,7 @@ async def _create_step(
     step_order: int,
     input_payload: dict,
 ) -> RunStep:
-    """Create a run step row in pending state."""
+    """Create a run step row in running state."""
     step = RunStep(
         run_id=run_id,
         step_type=step_type,
@@ -34,11 +35,7 @@ async def _create_step(
     return step
 
 
-async def _complete_step(
-    db: AsyncSession,
-    step: RunStep,
-    output_payload: dict,
-) -> None:
+async def _complete_step(db: AsyncSession, step: RunStep, output_payload: dict) -> None:
     """Mark a step as completed with its output."""
     step.status = "completed"
     step.output_payload = output_payload
@@ -46,11 +43,7 @@ async def _complete_step(
     await db.flush()
 
 
-async def _fail_step(
-    db: AsyncSession,
-    step: RunStep,
-    error: str,
-) -> None:
+async def _fail_step(db: AsyncSession, step: RunStep, error: str) -> None:
     """Mark a step as failed with error details."""
     step.status = "failed"
     step.error_details = {"error": error}
@@ -60,12 +53,8 @@ async def _fail_step(
 
 async def execute_run(run_id: uuid.UUID) -> None:
     """
-    Execute a run end-to-end.
-    Phase 5 scope: trigger_normalize + ai_process steps only.
-    Action dispatch added in Phase 6.
-
-    State machine:
-    pending → running → (steps execute) → completed | failed
+    Execute a run end-to-end: trigger_normalize → ai_process → action_dispatch.
+    State machine: pending → running → completed | failed.
     """
     async with AsyncSessionLocal() as db:
         # Load run
@@ -104,10 +93,13 @@ async def execute_run(run_id: uuid.UUID) -> None:
                 input_payload=run.trigger_payload,
             )
 
-            envelope = run.trigger_payload  # Already normalized at trigger time
+            envelope = run.trigger_payload
             input_text = envelope_to_input_text(envelope)
 
-            await _complete_step(db, step1, {"envelope": envelope, "input_text": input_text})
+            await _complete_step(db, step1, {
+                "envelope": envelope,
+                "input_text": input_text,
+            })
 
             # ── STEP 2: AI Process ────────────────────────────────
             ai_step_def = definition.get("ai_step", {})
@@ -142,11 +134,36 @@ async def execute_run(run_id: uuid.UUID) -> None:
                 model=ai_result["model"],
             )
 
+            ai_output = ai_result["output"]
+
             await _complete_step(db, step2, {
-                "ai_output": ai_result["output"],
+                "ai_output": ai_output,
                 "attempts": ai_result["attempts"],
                 "raw_response": ai_result["raw_response"],
             })
+
+            # ── STEP 3: Action Dispatch ───────────────────────────
+            step3 = await _create_step(
+                db=db,
+                run_id=run_id,
+                step_type="action_dispatch",
+                step_order=3,
+                input_payload={"ai_output": ai_output, "is_dry_run": run.is_dry_run},
+            )
+
+            try:
+                action_result = await dispatch_action(
+                    db=db,
+                    workflow_definition=definition,
+                    ai_output=ai_output,
+                    workflow_id=run.workflow_id,
+                    run_step_id=step3.id,
+                    is_dry_run=run.is_dry_run,
+                )
+                await _complete_step(db, step3, action_result)
+            except Exception as e:
+                await _fail_step(db, step3, str(e))
+                raise
 
             # ── FINALIZE RUN ──────────────────────────────────────
             await update_run_totals(db, run_id)
