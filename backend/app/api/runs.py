@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,20 +24,14 @@ async def trigger_run(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RunResponse:
-    """
-    Manually trigger a workflow run.
-    Creates a run row, executes synchronously, returns the completed run.
-    """
-    # Verify workflow exists and belongs to user
+    """Manually trigger a workflow run."""
     try:
         workflow = await workflow_service.get_workflow(db, payload.workflow_id, current_user.id)
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
 
-    # Normalize trigger payload into envelope
     envelope = normalize_manual_trigger(payload.payload, str(payload.workflow_id))
 
-    # Create run row
     run = Run(
         workflow_id=payload.workflow_id,
         version_number=workflow.current_version,
@@ -51,13 +45,11 @@ async def trigger_run(
     await db.commit()
     await db.refresh(run)
 
-    # Execute synchronously (Phase 5 — no background task yet)
     try:
         await execute_run(run.id)
     except Exception:
-        pass  # Error is persisted in run.status and run.error_message
+        pass
 
-    # Reload run with steps
     result = await db.execute(select(Run).where(Run.id == run.id))
     run = result.scalar_one()
 
@@ -75,23 +67,27 @@ async def trigger_run(
 async def list_runs(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    workflow_id: uuid.UUID | None = Query(default=None),
+    limit: int = Query(default=50, le=200),
 ) -> list[RunResponse]:
-    """List all runs for workflows owned by the current user."""
-    # Get all workflow IDs for this user
+    """List runs. Optionally filter by workflow_id."""
     wf_result = await db.execute(
         select(Workflow.id).where(Workflow.user_id == current_user.id)
     )
-    workflow_ids = [row[0] for row in wf_result.all()]
+    user_workflow_ids = [row[0] for row in wf_result.all()]
 
-    if not workflow_ids:
+    if not user_workflow_ids:
         return []
 
-    result = await db.execute(
-        select(Run)
-        .where(Run.workflow_id.in_(workflow_ids))
-        .order_by(Run.created_at.desc())
-        .limit(50)
-    )
+    query = select(Run).where(Run.workflow_id.in_(user_workflow_ids))
+
+    if workflow_id:
+        if workflow_id not in user_workflow_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+        query = query.where(Run.workflow_id == workflow_id)
+
+    query = query.order_by(Run.created_at.desc()).limit(limit)
+    result = await db.execute(query)
     runs = result.scalars().all()
     return [RunResponse.model_validate(r) for r in runs]
 
@@ -109,7 +105,6 @@ async def get_run(
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
 
-    # Verify ownership via workflow
     wf_result = await db.execute(
         select(Workflow).where(
             Workflow.id == run.workflow_id,
